@@ -3,7 +3,31 @@ package go_concurrency
 import (
 	"fmt"
 	"sync"
+	"time"
 )
+
+type IdRWLocker struct {
+	locks sync.Map
+	stat  map[any]stat
+}
+
+type stat struct {
+	held     bool
+	queue    int
+	lastUsed time.Time
+}
+
+func (l *IdRWLocker) Lock(resourceId any) {
+	if _, found := l.stat[resourceId]; !found {
+		l.stat[resourceId] = stat{}
+	} else {
+
+	}
+	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
+	mutex := val.(*sync.Mutex)
+	mutex.Lock()
+
+}
 
 type IdLocker struct {
 	locks sync.Map

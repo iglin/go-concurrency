@@ -8,25 +8,87 @@ import (
 
 type IdRWLocker struct {
 	locks sync.Map
-	stat  map[any]stat
+	stats sync.Map
 }
 
 type stat struct {
+	mutex    sync.RWMutex
 	held     bool
 	queue    int
 	lastUsed time.Time
 }
 
 func (l *IdRWLocker) Lock(resourceId any) {
-	if _, found := l.stat[resourceId]; !found {
-		l.stat[resourceId] = stat{}
-	} else {
-
-	}
+	l.addToQueue(resourceId)
 	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
-	mutex := val.(*sync.Mutex)
+	mutex := val.(*sync.RWMutex)
 	mutex.Lock()
+	l.updateStat(resourceId, true)
+}
 
+func (l *IdRWLocker) RLock(resourceId any) {
+	l.addToQueue(resourceId)
+	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
+	mutex := val.(*sync.RWMutex)
+	mutex.RLock()
+	l.updateStat(resourceId, true)
+}
+
+func (l *IdRWLocker) Unlock(resourceId any) {
+	l.addToQueue(resourceId)
+	val, ok := l.locks.Load(resourceId)
+	if ok {
+		l.updateStat(resourceId, false)
+		mutex := val.(*sync.RWMutex)
+		mutex.Unlock()
+	} else {
+		panic(fmt.Sprintf("memory: lock not found for resource id '%v'", resourceId))
+	}
+}
+
+func (l *IdRWLocker) RUnlock(resourceId any) {
+	l.addToQueue(resourceId)
+	val, ok := l.locks.Load(resourceId)
+	if ok {
+		l.updateStat(resourceId, false)
+		mutex := val.(*sync.RWMutex)
+		mutex.RUnlock()
+	} else {
+		panic(fmt.Sprintf("memory: lock not found for resource id '%v'", resourceId))
+	}
+}
+
+func (l *IdRWLocker) addToQueue(resourceId any) {
+	statAny, loaded := l.stats.LoadOrStore(resourceId, &stat{
+		held:     false,
+		queue:    1,
+		lastUsed: time.Now(),
+	})
+	if loaded {
+		stat := statAny.(*stat)
+		stat.mutex.Lock()
+		stat.queue++
+		stat.lastUsed = time.Now()
+		stat.mutex.Unlock()
+	}
+}
+
+func (l *IdRWLocker) updateStat(resourceId any, held bool) {
+	statAny, loaded := l.stats.LoadOrStore(resourceId, &stat{
+		held:     held,
+		queue:    0,
+		lastUsed: time.Now(),
+	})
+	if loaded {
+		stat := statAny.(*stat)
+		stat.mutex.Lock()
+		stat.held = true
+		if held {
+			stat.queue--
+		}
+		stat.lastUsed = time.Now()
+		stat.mutex.Unlock()
+	}
 }
 
 type IdLocker struct {

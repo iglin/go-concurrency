@@ -1,14 +1,71 @@
 package go_concurrency
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
 type IdRWLocker struct {
-	locks sync.Map
-	stats sync.Map
+	locks    sync.Map
+	stats    sync.Map
+	settings LockerSettings
+}
+
+func NewIdRWLocker(settings ...LockerSettings) *IdRWLocker {
+	locker := IdRWLocker{}
+	if len(settings) == 0 {
+		locker.settings = LockerSettings{
+			MaxSize:          -1,
+			CollectorEnabled: false,
+		}
+	} else {
+		locker.settings = settings[0]
+		if locker.settings.CollectorEnabled && locker.settings.CollectorContext == nil {
+			locker.settings.CollectorContext = context.Background()
+		}
+	}
+	if locker.settings.CollectorEnabled {
+		go locker.runCollector()
+	}
+	return &locker
+}
+
+func (l *IdRWLocker) runCollector() {
+	ctx := l.settings.CollectorContext
+	for {
+		select {
+		case <-time.After(l.settings.CollectorFirePeriod):
+			l.collectOldLocks()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (l *IdRWLocker) collectOldLocks() {
+	now := time.Now()
+	threshold := l.settings.LockMaxLifetime
+	l.stats.Range(func(resourceId, statAny any) bool {
+		stat := statAny.(*stat)
+		stat.mutex.RLock()
+		if !stat.held && now.Sub(stat.lastUsed) > threshold {
+			stat.mutex.RUnlock()
+			l.removeLock(resourceId)
+		} else {
+			stat.mutex.RUnlock()
+		}
+		return true
+	})
+}
+
+type LockerSettings struct {
+	MaxSize             int
+	CollectorEnabled    bool
+	CollectorContext    context.Context
+	CollectorFirePeriod time.Duration
+	LockMaxLifetime     time.Duration
 }
 
 type stat struct {
@@ -18,27 +75,71 @@ type stat struct {
 	lastUsed time.Time
 }
 
+func (l *IdRWLocker) removeOldest() {
+	oldestTime := time.Now()
+	var oldestResourceId any
+	l.stats.Range(func(resourceId, statAny any) bool {
+		stat := statAny.(*stat)
+		stat.mutex.RLock()
+
+		if !stat.held && stat.lastUsed.Before(oldestTime) {
+			oldestResourceId = resourceId
+			oldestTime = stat.lastUsed
+		}
+		stat.mutex.RUnlock()
+		return true
+	})
+	if oldestResourceId != nil {
+		l.removeLock(oldestResourceId)
+	}
+}
+
+func (l *IdRWLocker) removeLock(resourceId any) {
+	mutexAny, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
+	mutex := mutexAny.(*sync.RWMutex)
+	mutex.Lock()
+	defer mutex.Unlock()
+	l.locks.Delete(resourceId)
+
+	statMutexAny, _ := l.stats.LoadOrStore(resourceId, &stat{held: true})
+	statMutex := statMutexAny.(*sync.RWMutex)
+	statMutex.Lock()
+	defer statMutex.Unlock()
+	l.stats.Delete(resourceId)
+}
+
 func (l *IdRWLocker) Lock(resourceId any) {
-	l.addToQueue(resourceId)
+	needStats := l.needStats()
+	if needStats {
+		l.addToQueue(resourceId)
+	}
 	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
 	mutex := val.(*sync.RWMutex)
 	mutex.Lock()
-	l.updateStat(resourceId, true)
+	if needStats {
+		l.updateStat(resourceId, true)
+	}
 }
 
 func (l *IdRWLocker) RLock(resourceId any) {
-	l.addToQueue(resourceId)
+	needStats := l.needStats()
+	if needStats {
+		l.addToQueue(resourceId)
+	}
 	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
 	mutex := val.(*sync.RWMutex)
 	mutex.RLock()
-	l.updateStat(resourceId, true)
+	if needStats {
+		l.updateStat(resourceId, true)
+	}
 }
 
 func (l *IdRWLocker) Unlock(resourceId any) {
-	l.addToQueue(resourceId)
 	val, ok := l.locks.Load(resourceId)
 	if ok {
-		l.updateStat(resourceId, false)
+		if l.needStats() {
+			l.updateStat(resourceId, false)
+		}
 		mutex := val.(*sync.RWMutex)
 		mutex.Unlock()
 	} else {
@@ -47,15 +148,20 @@ func (l *IdRWLocker) Unlock(resourceId any) {
 }
 
 func (l *IdRWLocker) RUnlock(resourceId any) {
-	l.addToQueue(resourceId)
 	val, ok := l.locks.Load(resourceId)
 	if ok {
-		l.updateStat(resourceId, false)
+		if l.needStats() {
+			l.updateStat(resourceId, false)
+		}
 		mutex := val.(*sync.RWMutex)
 		mutex.RUnlock()
 	} else {
 		panic(fmt.Sprintf("memory: lock not found for resource id '%v'", resourceId))
 	}
+}
+
+func (l *IdRWLocker) needStats() bool {
+	return l.settings.MaxSize > 0 || l.settings.CollectorEnabled
 }
 
 func (l *IdRWLocker) addToQueue(resourceId any) {
@@ -71,6 +177,21 @@ func (l *IdRWLocker) addToQueue(resourceId any) {
 		stat.lastUsed = time.Now()
 		stat.mutex.Unlock()
 	}
+	maxSize := l.settings.MaxSize
+	if maxSize > 0 {
+		for l.getSize() > maxSize {
+			l.removeOldest()
+		}
+	}
+}
+
+func (l *IdRWLocker) getSize() int {
+	size := 0
+	l.locks.Range(func(_, _ any) bool {
+		size++
+		return true
+	})
+	return size
 }
 
 func (l *IdRWLocker) updateStat(resourceId any, held bool) {

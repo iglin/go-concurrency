@@ -252,7 +252,7 @@ func (l *idRWLocker) updateStat(resourceId any, held bool) {
 	if loaded {
 		stat := statAny.(*stat)
 		stat.mutex.Lock()
-		stat.held = true
+		stat.held = held
 		if held {
 			stat.queue--
 		}

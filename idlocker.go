@@ -118,7 +118,7 @@ func (l *idRWLocker) collectOldLocks() {
 	})
 }
 
-func (l *idRWLocker) removeOldest() {
+func (l *idRWLocker) removeOldest() bool {
 	oldestTime := time.Now()
 	var oldestResourceId any
 	l.stats.Range(func(resourceId, statAny any) bool {
@@ -134,7 +134,9 @@ func (l *idRWLocker) removeOldest() {
 	})
 	if oldestResourceId != nil {
 		l.removeLock(oldestResourceId)
+		return true
 	}
+	return false
 }
 
 func (l *idRWLocker) removeLock(resourceId any) {
@@ -144,10 +146,10 @@ func (l *idRWLocker) removeLock(resourceId any) {
 	defer mutex.Unlock()
 	l.locks.Delete(resourceId)
 
-	statMutexAny, _ := l.stats.LoadOrStore(resourceId, &stat{held: true})
-	statMutex := statMutexAny.(*sync.RWMutex)
-	statMutex.Lock()
-	defer statMutex.Unlock()
+	statAny, _ := l.stats.LoadOrStore(resourceId, &stat{held: true})
+	stat := statAny.(*stat)
+	stat.mutex.Lock()
+	defer stat.mutex.Unlock()
 	l.stats.Delete(resourceId)
 }
 
@@ -243,8 +245,12 @@ func (l *idRWLocker) addToQueue(resourceId any) {
 	}
 	maxSize := l.settings.MaxSize
 	if maxSize > 0 {
-		for l.GetCacheSize() > maxSize {
-			l.removeOldest()
+		for l.GetCacheSize() >= maxSize {
+			if l.removeOldest() {
+				continue
+			} else {
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
 	}
 }

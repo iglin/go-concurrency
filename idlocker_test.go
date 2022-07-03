@@ -95,6 +95,15 @@ func TestIdRWLockerSettingsWithCollector(t *testing.T) {
 	ctx.Done()
 }
 
+func TestIdRwLockerMaxSize(t *testing.T) {
+	locker := NewIdRWLocker(LockerSettings{MaxSize: 5})
+	for i := 0; i < 10; i++ {
+		locker.Lock(i)
+		locker.Unlock(i)
+	}
+	assert.Equal(t, 5, locker.GetCacheSize())
+}
+
 func TestIdRWLockerWithStats(t *testing.T) {
 	testIdRWLockerInternal(t, true)
 }

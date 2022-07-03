@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const DefaultCollectorFirePeriod = 1 * time.Minute
+
 type IdLocker interface {
 	Lock(resourceId any)
 	Unlock(resourceId any)
@@ -57,14 +59,18 @@ func NewIdRWLocker(settings ...LockerSettings) IdRWLocker {
 	}
 
 	// configure stats collection
-	if locker.settings.StatsEnabled {
-		locker.statsEnabled = true
-	} else {
-		locker.statsEnabled = locker.settings.CollectorEnabled || locker.settings.MaxSize > 0
+	locker.statsEnabled = locker.settings.StatsEnabled ||
+		locker.settings.CollectorEnabled ||
+		locker.settings.MaxSize > 0
+	if locker.statsEnabled {
+		locker.settings.StatsEnabled = true
 	}
 
 	// configure old locks collector
 	if locker.settings.CollectorEnabled {
+		if locker.settings.CollectorFirePeriod == 0 {
+			locker.settings.CollectorFirePeriod = DefaultCollectorFirePeriod
+		}
 		go locker.runCollector()
 	}
 	return &locker

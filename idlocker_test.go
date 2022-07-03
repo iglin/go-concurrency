@@ -41,7 +41,7 @@ func TestIdRWLockerDefaults(t *testing.T) {
 }
 
 func TestIdRWLockerSettings(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	locker := NewIdRWLocker(LockerSettings{
 		MaxSize:             10,
 		StatsEnabled:        true,
@@ -59,7 +59,7 @@ func TestIdRWLockerSettings(t *testing.T) {
 	assert.Equal(t, ctx, idRwLocker.settings.CollectorContext)
 	assert.Equal(t, 2*time.Minute, idRwLocker.settings.CollectorFirePeriod)
 	assert.Equal(t, 10*time.Minute, idRwLocker.settings.LockMaxLifetime)
-	ctx.Done()
+	cancel()
 }
 
 func TestIdRWLockerSettingsWithMaxSize(t *testing.T) {
@@ -77,7 +77,7 @@ func TestIdRWLockerSettingsWithMaxSize(t *testing.T) {
 }
 
 func TestIdRWLockerSettingsWithCollector(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	locker := NewIdRWLocker(LockerSettings{
 		MaxSize:          -1,
 		StatsEnabled:     false,
@@ -92,7 +92,7 @@ func TestIdRWLockerSettingsWithCollector(t *testing.T) {
 	assert.Equal(t, -1, idRwLocker.settings.MaxSize)
 	assert.Equal(t, DefaultCollectorFirePeriod, idRwLocker.settings.CollectorFirePeriod)
 	assert.Equal(t, time.Duration(0), idRwLocker.settings.LockMaxLifetime)
-	ctx.Done()
+	cancel()
 }
 
 func TestIdRwLockerMaxSize(t *testing.T) {
@@ -102,6 +102,32 @@ func TestIdRwLockerMaxSize(t *testing.T) {
 		locker.Unlock(i)
 	}
 	assert.Equal(t, 5, locker.GetCacheSize())
+}
+
+func TestIdRwLockerCollector(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	locker := NewIdRWLocker(LockerSettings{
+		CollectorEnabled:    true,
+		CollectorContext:    ctx,
+		CollectorFirePeriod: 200 * time.Millisecond,
+		LockMaxLifetime:     1 * time.Second,
+	})
+	locker.Lock(1)
+	locker.Unlock(1)
+
+	locker.Lock(2)
+	defer locker.Unlock(2)
+
+	time.Sleep(1200 * time.Millisecond)
+	locker.Lock(3)
+	locker.Unlock(3)
+
+	cancel()
+
+	assert.Equal(t, 2, locker.GetCacheSize())
+
+	time.Sleep(1200 * time.Millisecond)
+	assert.Equal(t, 2, locker.GetCacheSize())
 }
 
 func TestIdRWLockerWithStats(t *testing.T) {

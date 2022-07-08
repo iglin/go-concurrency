@@ -380,7 +380,7 @@ type idLocker struct {
 }
 
 func (l *idLocker) Lock(resourceId any) {
-	for { // sometimes mutex created by another goroutine will be loaded from the locks map, so might need to try several times
+	for { // sometimes mutex created by another goroutine will be loaded from the locks map, so might need to retry several times
 		if lockObtained := l.lockInternal(resourceId); lockObtained {
 			return
 		}

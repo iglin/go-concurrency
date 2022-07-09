@@ -1,4 +1,4 @@
-module github.com/iglin/go-concurrency/concurrency
+module github.com/iglin/go-concurrency
 
 go 1.18
 

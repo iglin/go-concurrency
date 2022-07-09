@@ -2,6 +2,7 @@ package concurrency
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
@@ -9,6 +10,38 @@ import (
 )
 
 const scale = 1000
+
+var (
+	resources = map[string]int{
+		"metric1": 1,
+		"metric2": 1000,
+	}
+
+	locker = NewIdLocker()
+)
+
+func incrementMetric(metricId string, waitGroup *sync.WaitGroup) {
+	locker.Lock(metricId)
+	defer locker.Unlock(metricId)
+
+	resources[metricId]++
+	waitGroup.Done()
+}
+
+func main() {
+	// wait group to wait all goroutines to finish
+	waitGroup := sync.WaitGroup{}
+	waitGroup.Add(3)
+
+	// run concurrent increments for metric1
+	go incrementMetric("metric1", &waitGroup)
+	go incrementMetric("metric1", &waitGroup)
+	go incrementMetric("metric1", &waitGroup)
+
+	waitGroup.Wait()
+	fmt.Println("metric1 value is ", resources["metric1"])
+	// output: "metric1 value is 4
+}
 
 func TestIdLocker(t *testing.T) {
 	locker := NewIdLocker()

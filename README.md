@@ -6,6 +6,10 @@ Concurrency utils for goroutines synchronization in golang.
 
 # Usage
 
+* [IdLocker](#idlocker)
+* [IdRWLocker](#idrwlocker)
+* [TypedSyncMap](#typedsyncmap)
+
 ## IdLocker
 
 Below is an example of using IdLocker for synchronizing concurrent modifications of metrics in `resources` map.
@@ -113,4 +117,37 @@ func main() {
 	fmt.Println("metric1 value is ", resources["metric1"])
 	// output: "metric1 value is 4
 }
+```
+
+## TypedSyncMap
+
+TypedSyncMap has the same interface as golang sync.Map, but extends it with generic types for keys and values. 
+Any type can be used as key or value type, including references. 
+
+Below is an example of using TypedSyncMap as synchronized map of resources mapped by integer ids. 
+
+See TypedSyncMap API godoc for more information. 
+
+```go
+package main
+
+import (
+	"fmt"
+	"github.com/iglin/go-concurrency"
+)
+
+type resource struct {
+	name string
+}
+
+func main() {
+	m := NewTypedSyncMap[int, *resource]()
+
+	m.Store(1, &resource{"test1"})
+
+	res, deleted := m.LoadAndDelete(1)
+	if deleted {
+		fmt.Println("Resource deleted for id 1: ", *res)
+	}
+	// output: Resource deleted for id 1:  {test1}
 ```

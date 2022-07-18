@@ -30,7 +30,7 @@ type IdLocker interface {
 // NewIdLocker constructor creates new IdLocker instance. You should pass this instance reference to any
 // code that will use it for synchronization.
 func NewIdLocker() IdLocker {
-	return &idLocker{}
+	return &idLocker{locks: NewTypedSyncMap[any, *sync.Mutex]()}
 }
 
 // IdRWLocker can be used to synchronize goroutines concurrent writes and reads on any resource by the resource id.
@@ -143,7 +143,9 @@ type Stat struct {
 // background job for collecting old locks. By default, these features are disabled: number of cached
 // locks is unlimited, and old locks are not collected in background.
 func NewIdRWLocker(settings ...LockerSettings) IdRWLocker {
-	locker := idRWLocker{}
+	locker := idRWLocker{
+		locks: NewTypedSyncMap[any, *sync.RWMutex](),
+	}
 	if len(settings) == 0 {
 		locker.settings = LockerSettings{
 			MaxSize:          -1,
@@ -163,6 +165,7 @@ func NewIdRWLocker(settings ...LockerSettings) IdRWLocker {
 		locker.settings.MaxSize > 0
 	if locker.statsEnabled {
 		locker.settings.StatsEnabled = true
+		locker.stats = NewTypedSyncMap[any, *stat]()
 	}
 
 	// configure old locks collector
@@ -176,8 +179,8 @@ func NewIdRWLocker(settings ...LockerSettings) IdRWLocker {
 }
 
 type idRWLocker struct {
-	locks        sync.Map
-	stats        sync.Map
+	locks        *TypedSyncMap[any, *sync.RWMutex]
+	stats        *TypedSyncMap[any, *stat]
 	statsEnabled bool
 	settings     LockerSettings
 }
@@ -207,8 +210,7 @@ func (l *idRWLocker) runCollector() {
 func (l *idRWLocker) collectOldLocks() {
 	now := time.Now()
 	threshold := l.settings.LockMaxLifetime
-	l.stats.Range(func(resourceId, statAny any) bool {
-		stat := statAny.(*stat)
+	l.stats.Range(func(resourceId any, stat *stat) bool {
 		stat.mutex.RLock()
 		if !stat.held && now.Sub(stat.lastUsed) > threshold {
 			stat.mutex.RUnlock()
@@ -223,8 +225,7 @@ func (l *idRWLocker) collectOldLocks() {
 func (l *idRWLocker) removeOldest() bool {
 	oldestTime := time.Now()
 	var oldestResourceId any
-	l.stats.Range(func(resourceId, statAny any) bool {
-		stat := statAny.(*stat)
+	l.stats.Range(func(resourceId any, stat *stat) bool {
 		stat.mutex.RLock()
 
 		if !stat.held && stat.lastUsed.Before(oldestTime) {
@@ -242,14 +243,12 @@ func (l *idRWLocker) removeOldest() bool {
 }
 
 func (l *idRWLocker) removeLock(resourceId any) {
-	mutexAny, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
-	mutex := mutexAny.(*sync.RWMutex)
+	mutex, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
 	mutex.Lock()
 	defer mutex.Unlock()
 	l.locks.Delete(resourceId)
 
-	statAny, _ := l.stats.LoadOrStore(resourceId, &stat{held: true})
-	stat := statAny.(*stat)
+	stat, _ := l.stats.LoadOrStore(resourceId, &stat{held: true})
 	stat.mutex.Lock()
 	defer stat.mutex.Unlock()
 	l.stats.Delete(resourceId)
@@ -259,8 +258,7 @@ func (l *idRWLocker) Lock(resourceId any) {
 	if l.statsEnabled {
 		l.addToQueue(resourceId)
 	}
-	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
-	mutex := val.(*sync.RWMutex)
+	mutex, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
 	mutex.Lock()
 	if l.statsEnabled {
 		l.updateStat(resourceId, true)
@@ -271,8 +269,7 @@ func (l *idRWLocker) RLock(resourceId any) {
 	if l.statsEnabled {
 		l.addToQueue(resourceId)
 	}
-	val, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
-	mutex := val.(*sync.RWMutex)
+	mutex, _ := l.locks.LoadOrStore(resourceId, &sync.RWMutex{})
 	mutex.RLock()
 	if l.statsEnabled {
 		l.updateStat(resourceId, true)
@@ -280,12 +277,11 @@ func (l *idRWLocker) RLock(resourceId any) {
 }
 
 func (l *idRWLocker) Unlock(resourceId any) {
-	val, ok := l.locks.Load(resourceId)
+	mutex, ok := l.locks.Load(resourceId)
 	if ok {
 		if l.statsEnabled {
 			l.updateStat(resourceId, false)
 		}
-		mutex := val.(*sync.RWMutex)
 		mutex.Unlock()
 	} else {
 		panic(fmt.Sprintf("memory: lock not found for resource id '%v'", resourceId))
@@ -293,12 +289,11 @@ func (l *idRWLocker) Unlock(resourceId any) {
 }
 
 func (l *idRWLocker) RUnlock(resourceId any) {
-	val, ok := l.locks.Load(resourceId)
+	mutex, ok := l.locks.Load(resourceId)
 	if ok {
 		if l.statsEnabled {
 			l.updateStat(resourceId, false)
 		}
-		mutex := val.(*sync.RWMutex)
 		mutex.RUnlock()
 	} else {
 		panic(fmt.Sprintf("memory: lock not found for resource id '%v'", resourceId))
@@ -307,7 +302,7 @@ func (l *idRWLocker) RUnlock(resourceId any) {
 
 func (l *idRWLocker) GetCacheSize() int {
 	size := 0
-	l.locks.Range(func(_, _ any) bool {
+	l.locks.Range(func(_ any, _ *sync.RWMutex) bool {
 		size++
 		return true
 	})
@@ -317,8 +312,7 @@ func (l *idRWLocker) GetCacheSize() int {
 func (l *idRWLocker) GetStats() map[any]Stat {
 	result := make(map[any]Stat)
 	if l.statsEnabled {
-		l.stats.Range(func(resourceId, statAny any) bool {
-			statInternal := statAny.(*stat)
+		l.stats.Range(func(resourceId any, statInternal *stat) bool {
 			statInternal.mutex.RLock()
 			result[resourceId] = Stat{
 				Held:     statInternal.held,
@@ -333,13 +327,12 @@ func (l *idRWLocker) GetStats() map[any]Stat {
 }
 
 func (l *idRWLocker) addToQueue(resourceId any) {
-	statAny, loaded := l.stats.LoadOrStore(resourceId, &stat{
+	stat, loaded := l.stats.LoadOrStore(resourceId, &stat{
 		held:     false,
 		queue:    1,
 		lastUsed: time.Now(),
 	})
 	if loaded {
-		stat := statAny.(*stat)
 		stat.mutex.Lock()
 		stat.queue++
 		stat.lastUsed = time.Now()
@@ -358,13 +351,12 @@ func (l *idRWLocker) addToQueue(resourceId any) {
 }
 
 func (l *idRWLocker) updateStat(resourceId any, held bool) {
-	statAny, loaded := l.stats.LoadOrStore(resourceId, &stat{
+	stat, loaded := l.stats.LoadOrStore(resourceId, &stat{
 		held:     held,
 		queue:    0,
 		lastUsed: time.Now(),
 	})
 	if loaded {
-		stat := statAny.(*stat)
 		stat.mutex.Lock()
 		stat.held = held
 		if held {
@@ -376,7 +368,7 @@ func (l *idRWLocker) updateStat(resourceId any, held bool) {
 }
 
 type idLocker struct {
-	locks sync.Map
+	locks *TypedSyncMap[any, *sync.Mutex]
 }
 
 func (l *idLocker) Lock(resourceId any) {
@@ -388,8 +380,7 @@ func (l *idLocker) Lock(resourceId any) {
 }
 
 func (l *idLocker) lockInternal(resourceId any) bool {
-	val, loaded := l.locks.LoadOrStore(resourceId, &sync.Mutex{})
-	mutex := val.(*sync.Mutex)
+	mutex, loaded := l.locks.LoadOrStore(resourceId, &sync.Mutex{})
 	if loaded { // another goroutine already uses this resource
 		mutex.Lock() // wait for another goroutine to remove the lock from the map
 		defer mutex.Unlock()
@@ -401,9 +392,8 @@ func (l *idLocker) lockInternal(resourceId any) bool {
 }
 
 func (l *idLocker) Unlock(resourceId any) {
-	val, ok := l.locks.LoadAndDelete(resourceId)
+	mutex, ok := l.locks.LoadAndDelete(resourceId)
 	if ok {
-		mutex := val.(*sync.Mutex)
 		mutex.Unlock()
 	} else {
 		panic(fmt.Sprintf("no lock found for resourceId '%v'", resourceId))

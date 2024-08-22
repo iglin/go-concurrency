@@ -21,7 +21,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/iglin/go-concurrency"
+	"github.com/iglin/go-concurrency/idlock"
 	"sync"
 )
 
@@ -31,12 +31,12 @@ var (
 		"metric2": 1000,
 	}
 
-	locker = concurrency.NewIdLocker()
+	locker = idlock.NewIdLocker[string]()
 )
 
 func incrementMetric(metricId string, waitGroup *sync.WaitGroup) {
-	locker.Lock(metricId)
-	defer locker.Unlock(metricId)
+	lock := locker.Lock(metricId)
+	defer lock.Unlock()
 
 	resources[metricId]++
 	waitGroup.Done()
@@ -70,7 +70,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/iglin/go-concurrency"
+	"github.com/iglin/go-concurrency/idlock"
 	"sync"
 )
 
@@ -82,7 +82,7 @@ var (
 
 	ctx, cancel = context.WithCancel(context.Background())
 
-	locker = concurrency.NewIdRWLocker(concurrency.LockerSettings{
+	locker = idlock.NewIdRWLocker[string](idlock.LockerSettings{
 		MaxSize:             10,
 		StatsEnabled:        true,
 		CollectorEnabled:    true,
@@ -93,8 +93,8 @@ var (
 )
 
 func incrementMetric(metricId string, waitGroup *sync.WaitGroup) {
-	locker.Lock(metricId)
-	defer locker.Unlock(metricId)
+	lock := locker.Lock(metricId)
+	defer lock.Unlock()
 
 	resources[metricId]++
 	waitGroup.Done()
@@ -133,7 +133,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/iglin/go-concurrency"
+	"github.com/iglin/go-concurrency/smap"
 )
 
 type resource struct {
@@ -141,7 +141,7 @@ type resource struct {
 }
 
 func main() {
-	m := NewTypedSyncMap[int, *resource]()
+	m := smap.NewTypedSyncMap[int, *resource]()
 
 	m.Store(1, &resource{"test1"})
 

@@ -1,4 +1,4 @@
-package concurrency
+package smap
 
 import (
 	"github.com/stretchr/testify/assert"

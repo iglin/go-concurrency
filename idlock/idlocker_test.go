@@ -1,7 +1,8 @@
-package concurrency
+package idlock
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
@@ -11,30 +12,35 @@ import (
 const scale = 1000
 
 func TestIdLocker(t *testing.T) {
-	locker := NewIdLocker()
+	locker := NewIdLocker[int]()
 
 	resourceId := 1
 	sharedCounter := 0
 
-	wg := sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
 	wg.Add(scale)
 	for i := 0; i < scale; i++ {
-		go func() {
-			locker.Lock(resourceId)
-			defer locker.Unlock(resourceId)
-			sharedCounter++
-			wg.Done()
-		}()
+		go incrementCounter(locker, resourceId, wg, &sharedCounter)
 	}
+	fmt.Println("Waiting all goroutines to finish")
 	wg.Wait()
 	assert.Equal(t, scale, sharedCounter)
 }
 
+func incrementCounter(locker IdLocker[int], resourceId int, wg *sync.WaitGroup, sharedCounter *int) {
+	l := locker.Lock(resourceId)
+	defer l.Unlock()
+	fmt.Println("Incrementing", *sharedCounter)
+	*sharedCounter++
+	wg.Done()
+}
+
 func TestIdRWLockerDefaults(t *testing.T) {
-	locker := NewIdRWLocker()
-	idRwLocker := locker.(*idRWLocker)
-	assert.False(t, idRwLocker.statsEnabled)
+	locker := NewIdRWLocker[int]()
+	idRwLocker := locker.(*rwLocker[int])
 	assert.NotNil(t, idRwLocker.settings)
+	assert.True(t, idRwLocker.settings.CacheLocks)
+	assert.False(t, idRwLocker.settings.StatsEnabled)
 	assert.False(t, idRwLocker.settings.CollectorEnabled)
 	assert.False(t, idRwLocker.settings.StatsEnabled)
 	assert.GreaterOrEqual(t, 0, idRwLocker.settings.MaxSize)
@@ -42,7 +48,8 @@ func TestIdRWLockerDefaults(t *testing.T) {
 
 func TestIdRWLockerSettings(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	locker := NewIdRWLocker(LockerSettings{
+	locker := NewIdRWLocker[int](LockerSettings{
+		CacheLocks:          true,
 		MaxSize:             10,
 		StatsEnabled:        true,
 		CollectorEnabled:    true,
@@ -50,9 +57,10 @@ func TestIdRWLockerSettings(t *testing.T) {
 		CollectorFirePeriod: 2 * time.Minute,
 		LockMaxLifetime:     10 * time.Minute,
 	})
-	idRwLocker := locker.(*idRWLocker)
-	assert.True(t, idRwLocker.statsEnabled)
+	idRwLocker := locker.(*rwLocker[int])
 	assert.NotNil(t, idRwLocker.settings)
+	assert.True(t, idRwLocker.settings.CacheLocks)
+	assert.True(t, idRwLocker.settings.StatsEnabled)
 	assert.True(t, idRwLocker.settings.CollectorEnabled)
 	assert.True(t, idRwLocker.settings.StatsEnabled)
 	assert.Equal(t, 10, idRwLocker.settings.MaxSize)
@@ -62,15 +70,28 @@ func TestIdRWLockerSettings(t *testing.T) {
 	cancel()
 }
 
+func TestIdRWLockerSettingsPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("The code did not panic")
+		}
+	}()
+	_ = NewIdRWLocker[int](LockerSettings{
+		MaxSize: 10,
+	})
+}
+
 func TestIdRWLockerSettingsWithMaxSize(t *testing.T) {
-	locker := NewIdRWLocker(LockerSettings{
+	locker := NewIdRWLocker[int](LockerSettings{
+		CacheLocks:       true,
 		MaxSize:          10,
 		StatsEnabled:     false,
 		CollectorEnabled: false,
 	})
-	idRwLocker := locker.(*idRWLocker)
-	assert.True(t, idRwLocker.statsEnabled)
+	idRwLocker := locker.(*rwLocker[int])
 	assert.NotNil(t, idRwLocker.settings)
+	assert.True(t, idRwLocker.settings.CacheLocks)
+	assert.True(t, idRwLocker.settings.StatsEnabled)
 	assert.False(t, idRwLocker.settings.CollectorEnabled)
 	assert.True(t, idRwLocker.settings.StatsEnabled)
 	assert.Equal(t, 10, idRwLocker.settings.MaxSize)
@@ -78,49 +99,52 @@ func TestIdRWLockerSettingsWithMaxSize(t *testing.T) {
 
 func TestIdRWLockerSettingsWithCollector(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	locker := NewIdRWLocker(LockerSettings{
-		MaxSize:          -1,
+	locker := NewIdRWLocker[int](LockerSettings{
+		CacheLocks:       true,
+		MaxSize:          0,
 		StatsEnabled:     false,
 		CollectorEnabled: true,
 		CollectorContext: ctx,
 	})
-	idRwLocker := locker.(*idRWLocker)
-	assert.True(t, idRwLocker.statsEnabled)
+	idRwLocker := locker.(*rwLocker[int])
 	assert.NotNil(t, idRwLocker.settings)
+	assert.True(t, idRwLocker.settings.CacheLocks)
+	assert.True(t, idRwLocker.settings.StatsEnabled)
 	assert.True(t, idRwLocker.settings.CollectorEnabled)
 	assert.True(t, idRwLocker.settings.StatsEnabled)
-	assert.Equal(t, -1, idRwLocker.settings.MaxSize)
+	assert.Equal(t, 0, idRwLocker.settings.MaxSize)
 	assert.Equal(t, DefaultCollectorFirePeriod, idRwLocker.settings.CollectorFirePeriod)
 	assert.Equal(t, time.Duration(0), idRwLocker.settings.LockMaxLifetime)
 	cancel()
 }
 
 func TestIdRwLockerMaxSize(t *testing.T) {
-	locker := NewIdRWLocker(LockerSettings{MaxSize: 5})
+	locker := NewIdRWLocker[int](LockerSettings{CacheLocks: true, MaxSize: 5})
 	for i := 0; i < 10; i++ {
-		locker.Lock(i)
-		locker.Unlock(i)
+		lock := locker.Lock(i)
+		lock.Unlock()
 	}
 	assert.Equal(t, 5, locker.GetCacheSize())
 }
 
 func TestIdRwLockerCollector(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	locker := NewIdRWLocker(LockerSettings{
+	locker := NewIdRWLocker[int](LockerSettings{
+		CacheLocks:          true,
 		CollectorEnabled:    true,
 		CollectorContext:    ctx,
 		CollectorFirePeriod: 200 * time.Millisecond,
 		LockMaxLifetime:     1 * time.Second,
 	})
-	locker.Lock(1)
-	locker.Unlock(1)
+	lock := locker.Lock(1)
+	lock.Unlock()
 
-	locker.Lock(2)
-	defer locker.Unlock(2)
+	lock = locker.Lock(2)
+	defer lock.Unlock()
 
 	time.Sleep(1200 * time.Millisecond)
-	locker.Lock(3)
-	locker.Unlock(3)
+	anotherLock := locker.Lock(3)
+	anotherLock.Unlock()
 
 	cancel()
 
@@ -139,7 +163,8 @@ func TestIdRWLockerWithoutStats(t *testing.T) {
 }
 
 func testIdRWLockerInternal(t *testing.T, statsEnabled bool) {
-	locker := NewIdRWLocker(LockerSettings{
+	locker := NewIdRWLocker[int](LockerSettings{
+		CacheLocks:   true,
 		StatsEnabled: statsEnabled,
 	})
 
@@ -150,12 +175,12 @@ func testIdRWLockerInternal(t *testing.T, statsEnabled bool) {
 	wg.Add(2 * scale)
 	for i := 1; i <= 2*scale; i++ {
 		go func() {
-			locker.RLock(resourceId)
+			rLock := locker.RLock(resourceId)
 			assert.LessOrEqual(t, sharedCounter, scale)
-			locker.RUnlock(resourceId)
+			rLock.Unlock()
 
-			locker.Lock(resourceId)
-			defer locker.Unlock(resourceId)
+			lock := locker.Lock(resourceId)
+			defer lock.Unlock()
 			if sharedCounter < scale {
 				sharedCounter++
 			}
